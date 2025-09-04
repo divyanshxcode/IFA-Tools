@@ -32,7 +32,7 @@ def auto_detect_encoding(df, column):
     # Default: return as-is
     return {str(v): str(v) for v in unique_values}
 
-def compute_rolling_averages(df, selected_numeric_cols, result_config, favorite_config, additional_stats_configs):
+def compute_rolling_averages(df, selected_numeric_cols, result_config, favorite_config, home_away_config):
     """
     Compute rolling averages for each team based on previous matches only.
     Generates ALL possible combinations of filters.
@@ -62,29 +62,20 @@ def compute_rolling_averages(df, selected_numeric_cols, result_config, favorite_
     if favorite_config and favorite_config['enabled']:
         favorite_filters.extend(favorite_config['values'].keys())
     
-    # Additional stat filters: build dynamically
-    additional_filters_lists = []
-    for stat_config in additional_stats_configs:
-        if stat_config['enabled']:
-            stat_filters = ['blank'] + list(stat_config['values'].keys())
-            additional_filters_lists.append(stat_filters)
-        else:
-            additional_filters_lists.append(['blank'])
+    # Home/Away filters: [home, away, blank]
+    home_away_filters = ['blank']  # blank means no filter
+    if home_away_config and home_away_config['enabled']:
+        home_away_filters.extend(home_away_config['values'].keys())
     
-    # Generate all combinations using itertools.product
-    all_filter_lists = [result_filters, favorite_filters] + additional_filters_lists
-    
-    for combination in product(*all_filter_lists):
-        filter_combo = {
-            'result': combination[0],
-            'favorite': combination[1]
-        }
-        
-        # Add additional stats dynamically
-        for i, stat_config in enumerate(additional_stats_configs):
-            filter_combo[f'stat_{i}'] = combination[2 + i]
-        
-        filter_combinations.append(filter_combo)
+    # Generate all combinations
+    for result_filter in result_filters:
+        for favorite_filter in favorite_filters:
+            for home_away_filter in home_away_filters:
+                filter_combinations.append({
+                    'result': result_filter,
+                    'favorite': favorite_filter,
+                    'home_away': home_away_filter
+                })
     
     # Generate all column names that will be created
     new_columns = []
@@ -95,25 +86,17 @@ def compute_rolling_averages(df, selected_numeric_cols, result_config, favorite_
                     # Build column name based on active filters
                     name_parts = []
                     
-                    # Add result filter if not blank
                     if combo['result'] != 'blank':
                         name_parts.append(combo['result'])
                     
-                    # Add aggregation function
                     name_parts.append(agg_name)
                     
-                    # Add favorite filter if not blank
                     if combo['favorite'] != 'blank':
                         name_parts.append(combo['favorite'])
                     
-                    # Add additional stats filters if not blank
-                    for i, stat_config in enumerate(additional_stats_configs):
-                        if combo[f'stat_{i}'] != 'blank':
-                            stat_name = stat_config['name']
-                            stat_value = combo[f'stat_{i}']
-                            name_parts.append(f"{stat_name}-{stat_value}")
+                    if combo['home_away'] != 'blank':
+                        name_parts.append(combo['home_away'])
                     
-                    # Add column name and window
                     name_parts.append(col)
                     name_parts.append(window_key)
                     
@@ -164,13 +147,12 @@ def compute_rolling_averages(df, selected_numeric_cols, result_config, favorite_
                             filtered_matches[favorite_config['column']] == favorite_value
                         ]
                     
-                    # Apply additional stat filters if not blank
-                    for i, stat_config in enumerate(additional_stats_configs):
-                        if combo[f'stat_{i}'] != 'blank' and stat_config['enabled']:
-                            stat_value = stat_config['values'][combo[f'stat_{i}']]
-                            filtered_matches = filtered_matches[
-                                filtered_matches[stat_config['column']] == stat_value
-                            ]
+                    # Apply home/away filter if not blank
+                    if combo['home_away'] != 'blank' and home_away_config and home_away_config['enabled']:
+                        home_away_value = home_away_config['values'][combo['home_away']]
+                        filtered_matches = filtered_matches[
+                            filtered_matches[home_away_config['column']] == home_away_value
+                        ]
                     
                     # Apply window sizes and compute statistics
                     for window_key, window_size in windows.items():
@@ -194,25 +176,17 @@ def compute_rolling_averages(df, selected_numeric_cols, result_config, favorite_
                                 # Build column name
                                 name_parts = []
                                 
-                                # Add result filter if not blank
                                 if combo['result'] != 'blank':
                                     name_parts.append(combo['result'])
                                 
-                                # Add aggregation function
                                 name_parts.append(agg_name)
                                 
-                                # Add favorite filter if not blank
                                 if combo['favorite'] != 'blank':
                                     name_parts.append(combo['favorite'])
                                 
-                                # Add additional stats filters if not blank
-                                for i, stat_config in enumerate(additional_stats_configs):
-                                    if combo[f'stat_{i}'] != 'blank':
-                                        stat_name = stat_config['name']
-                                        stat_value = combo[f'stat_{i}']
-                                        name_parts.append(f"{stat_name}-{stat_value}")
+                                if combo['home_away'] != 'blank':
+                                    name_parts.append(combo['home_away'])
                                 
-                                # Add column name and window
                                 name_parts.append(col)
                                 name_parts.append(window_key)
                                 
@@ -263,97 +237,42 @@ def main():
             st.subheader("📊 Data Preview")
             st.dataframe(df.head(10))
             
-            # Column Mapping Section
-            st.subheader("🗂️ Column Mapping")
-            st.markdown("""
-            **Why these columns are required:**
-            - **Team/Entity**: To group data and calculate rolling statistics for each team/fighter separately
-            - **Date**: To ensure chronological order and prevent future data leakage 
-            - **MatchID**: Unique identifier for proper sorting and handling multiple matches on same date
-            """)
+            # Validate required columns
+            required_cols = ['Team', 'Date', 'MatchID']
+            missing_cols = [col for col in required_cols if col not in df.columns]
             
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                team_column = st.selectbox(
-                    "Select Team/Entity Column:",
-                    options=df.columns.tolist(),
-                    help="Column that identifies the team or fighter"
-                )
-            
-            with col2:
-                date_column = st.selectbox(
-                    "Select Date Column:",
-                    options=df.columns.tolist(),
-                    help="Column containing match/event dates"
-                )
-            
-            with col3:
-                match_id_column = st.selectbox(
-                    "Select Match/Event ID Column:",
-                    options=df.columns.tolist(),
-                    help="Column with unique identifiers for each match/event"
-                )
-            
-            # Create a copy of the dataframe with renamed columns
-            df_processed = df.copy()
-            df_processed = df_processed.rename(columns={
-                team_column: 'Team',
-                date_column: 'Date',
-                match_id_column: 'MatchID'
-            })
-            
-            # Validate that user didn't select the same column for multiple mappings
-            selected_cols = [team_column, date_column, match_id_column]
-            if len(set(selected_cols)) != len(selected_cols):
-                st.error("❌ Please select different columns for Team, Date, and MatchID")
+            if missing_cols:
+                st.error(f"❌ Missing required columns: {missing_cols}")
+                st.info("Required columns: Team, Date, MatchID")
                 return
             
             # Convert Date to datetime if it's not already
-            if df_processed['Date'].dtype == 'object':
-                try:
-                    df_processed['Date'] = pd.to_datetime(df_processed['Date'], errors='coerce')
-                    if df_processed['Date'].isnull().any():
-                        st.warning("⚠️ Some dates could not be parsed. Please check your date format.")
-                except:
-                    st.error("❌ Could not convert selected date column to datetime format")
-                    return
+            if df['Date'].dtype == 'object':
+                df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
             
-            st.success("✅ Column mapping successful!")
-            
-            # Show data info with mapped columns
+            # Show data info
             st.subheader("📈 Dataset Information")
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("Total Records", len(df_processed))
+                st.metric("Total Records", len(df))
             with col2:
-                st.metric("Unique Teams", df_processed['Team'].nunique())
+                st.metric("Unique Teams", df['Team'].nunique())
             with col3:
-                date_range = f"{df_processed['Date'].min().strftime('%Y-%m-%d')} to {df_processed['Date'].max().strftime('%Y-%m-%d')}"
-                st.metric("Date Range", date_range)
-            
-            # Show sample of mapped data
-            st.subheader("🔄 Mapped Data Preview")
-            mapped_preview = df_processed[['Team', 'Date', 'MatchID']].head()
-            st.dataframe(mapped_preview)
+                st.metric("Date Range", f"{df['Date'].min().strftime('%Y-%m-%d')} to {df['Date'].max().strftime('%Y-%m-%d')}")
             
             # Configuration Section
             st.subheader("⚙️ Configuration Options")
             
             # 1. Numeric Columns Selection
-            numeric_cols = df_processed.select_dtypes(include=[np.number]).columns.tolist()
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
             exclude_cols = ['MatchID', 'Date']
             available_numeric_cols = [col for col in numeric_cols if col not in exclude_cols]
-            
-            if not available_numeric_cols:
-                st.error("❌ No numeric columns found in your dataset for calculating rolling statistics.")
-                return
             
             st.write("**1. Select Numeric Columns for Rolling Statistics:**")
             selected_numeric_cols = st.multiselect(
                 "Choose columns to calculate rolling statistics for:",
                 options=available_numeric_cols,
-                default=available_numeric_cols[:5] if len(available_numeric_cols) > 5 else available_numeric_cols,  # Limit default selection
+                default=available_numeric_cols,  # Select all by default
                 help="Select the numeric columns you want to calculate rolling averages and medians for"
             )
             
@@ -365,7 +284,7 @@ def main():
             
             if has_result_filter:
                 # Find potential result columns
-                potential_result_cols = [col for col in df_processed.columns if 'result' in col.lower() or 'outcome' in col.lower()]
+                potential_result_cols = [col for col in df.columns if 'result' in col.lower() or 'outcome' in col.lower()]
                 
                 if potential_result_cols:
                     result_column = st.selectbox(
@@ -376,13 +295,13 @@ def main():
                 else:
                     result_column = st.selectbox(
                         "Select the result column:",
-                        options=df_processed.columns.tolist(),
+                        options=df.columns.tolist(),
                         help="Choose the column that contains match results"
                     )
                 
                 # Auto-detect encoding
-                auto_encoding = auto_detect_encoding(df_processed, result_column)
-                unique_values = df_processed[result_column].dropna().unique()
+                auto_encoding = auto_detect_encoding(df, result_column)
+                unique_values = df[result_column].dropna().unique()
                 
                 st.write(f"Unique values in {result_column}: {list(unique_values)}")
                 st.write("**Configure result encoding:**")
@@ -436,7 +355,7 @@ def main():
             
             if has_favorite_filter:
                 # Find potential favorite columns
-                potential_fav_cols = [col for col in df_processed.columns if 'fav' in col.lower() or 'underdog' in col.lower()]
+                potential_fav_cols = [col for col in df.columns if 'fav' in col.lower() or 'underdog' in col.lower()]
                 
                 if potential_fav_cols:
                     favorite_column = st.selectbox(
@@ -447,12 +366,12 @@ def main():
                 else:
                     favorite_column = st.selectbox(
                         "Select the favorite column:",
-                        options=df_processed.columns.tolist(),
+                        options=df.columns.tolist(),
                         help="Choose the column that indicates favorite/underdog status"
                     )
                 
                 # Auto-detect encoding
-                unique_values = df_processed[favorite_column].dropna().unique()
+                unique_values = df[favorite_column].dropna().unique()
                 st.write(f"Unique values in {favorite_column}: {list(unique_values)}")
                 
                 # Try to auto-detect True/False pattern
@@ -498,105 +417,75 @@ def main():
                     }
                     st.success(f"✅ Favorite filter configured: {list(favorite_encoding.keys())}")
             
-            # 4. Dynamic Additional Stats Configuration
-            st.write("**4. Additional Categorical Stats (optional):**")
+            # 4. Home/Away Configuration
+            st.write("**4. Home/Away Filter (optional):**")
+            home_away_config = {'enabled': False}
             
-            # Initialize session state for additional stats
-            if 'additional_stats' not in st.session_state:
-                st.session_state.additional_stats = []
+            has_home_away_filter = st.checkbox("Include Home/Away combinations", help="Filter by home/away status")
             
-            # Add new stat button
-            col1, col2 = st.columns([1, 3])
-            with col1:
-                if st.button("➕ Add Categorical Stat"):
-                    stat_number = len(st.session_state.additional_stats) + 1
-                    st.session_state.additional_stats.append({
-                        'name': f'Stat{stat_number}',
-                        'column': None,
-                        'values': {},
-                        'enabled': True
-                    })
-                    st.rerun()
-            
-            with col2:
-                if st.session_state.additional_stats and st.button("🗑️ Remove Last Stat"):
-                    st.session_state.additional_stats.pop()
-                    st.rerun()
-            
-            # Configure each additional stat
-            additional_stats_configs = []
-            for i, stat in enumerate(st.session_state.additional_stats):
-                with st.expander(f"📊 Configure {stat['name']}", expanded=True):
+            if has_home_away_filter:
+                # Find potential home/away columns
+                potential_home_cols = [col for col in df.columns if 'home' in col.lower() or 'away' in col.lower() or 'venue' in col.lower()]
+                
+                if potential_home_cols:
+                    home_away_column = st.selectbox(
+                        "Select the home/away column:",
+                        options=potential_home_cols,
+                        help="Choose the column that indicates home/away status"
+                    )
+                else:
+                    home_away_column = st.selectbox(
+                        "Select the home/away column:",
+                        options=df.columns.tolist(),
+                        help="Choose the column that indicates home/away status"
+                    )
+                
+                # Auto-detect encoding
+                unique_values = df[home_away_column].dropna().unique()
+                st.write(f"Unique values in {home_away_column}: {list(unique_values)}")
+                
+                # Try to auto-detect Home/Away pattern
+                auto_detected = False
+                if len(unique_values) == 2:
+                    val1, val2 = unique_values
+                    if str(val1).lower() in ['home', 'h', '1', 'true'] and str(val2).lower() in ['away', 'a', '0', 'false']:
+                        home_away_encoding = {'home': val1, 'away': val2}
+                        auto_detected = True
+                        st.success(f"✅ Auto-detected encoding: Home={val1}, Away={val2}")
+                    elif str(val2).lower() in ['home', 'h', '1', 'true'] and str(val1).lower() in ['away', 'a', '0', 'false']:
+                        home_away_encoding = {'home': val2, 'away': val1}
+                        auto_detected = True
+                        st.success(f"✅ Auto-detected encoding: Home={val2}, Away={val1}")
+                
+                if not auto_detected:
+                    st.write("**Configure home/away encoding:**")
                     col1, col2 = st.columns(2)
                     
                     with col1:
-                        # Stat name input
-                        stat_name = st.text_input(
-                            f"Stat Name:",
-                            value=stat['name'],
-                            key=f"stat_name_{i}",
-                            help="This name will appear in column names (e.g., 'Role', 'Position', 'Venue')"
+                        home_value = st.selectbox(
+                            "Value for 'Home':",
+                            options=['None'] + list(unique_values)
                         )
-                        st.session_state.additional_stats[i]['name'] = stat_name
                     
                     with col2:
-                        # Find categorical columns (object type)
-                        categorical_cols = df_processed.select_dtypes(include=['object']).columns.tolist()
-                        
-                        # Column selection
-                        stat_column = st.selectbox(
-                            f"Select Column for {stat_name}:",
-                            options=['None'] + categorical_cols,
-                            key=f"stat_column_{i}",
-                            help="Choose a categorical column for this stat"
+                        away_value = st.selectbox(
+                            "Value for 'Away':",
+                            options=['None'] + list(unique_values)
                         )
                     
-                    if stat_column != 'None':
-                        # Show unique values and configure encoding
-                        unique_values = df_processed[stat_column].dropna().unique()
-                        st.write(f"**Unique values in {stat_column}:** {list(unique_values)}")
-                        
-                        st.write(f"**Configure categories for {stat_name}:**")
-                        
-                        # Dynamic category configuration
-                        stat_encoding = {}
-                        num_cols = min(len(unique_values), 4)  # Max 4 columns for layout
-                        cols = st.columns(num_cols)
-                        
-                        for j, value in enumerate(unique_values):
-                            with cols[j % num_cols]:
-                                category_name = st.text_input(
-                                    f"Category name for '{value}':",
-                                    value=str(value),
-                                    key=f"category_{i}_{j}",
-                                    help=f"This will appear in column names as {stat_name}-[category_name]"
-                                )
-                                
-                                include_category = st.checkbox(
-                                    f"Include '{value}' as '{category_name}'",
-                                    value=True,
-                                    key=f"include_{i}_{j}"
-                                )
-                                
-                                if include_category:
-                                    stat_encoding[category_name] = value
-                        
-                        if stat_encoding:
-                            additional_stats_configs.append({
-                                'name': stat_name,
-                                'column': stat_column,
-                                'values': stat_encoding,
-                                'enabled': True
-                            })
-                            st.success(f"✅ {stat_name} configured with categories: {list(stat_encoding.keys())}")
-                        else:
-                            additional_stats_configs.append({'enabled': False})
-                    else:
-                        additional_stats_configs.append({'enabled': False})
-            
-            # Fill in missing configs if needed
-            while len(additional_stats_configs) < len(st.session_state.additional_stats):
-                additional_stats_configs.append({'enabled': False})
+                    home_away_encoding = {}
+                    if home_value != 'None':
+                        home_away_encoding['home'] = home_value
+                    if away_value != 'None':
+                        home_away_encoding['away'] = away_value
+                
+                if home_away_encoding:
+                    home_away_config = {
+                        'enabled': True,
+                        'column': home_away_column,
+                        'values': home_away_encoding
+                    }
+                    st.success(f"✅ Home/Away filter configured: {list(home_away_encoding.keys())}")
             
             # Show configuration summary
             with st.expander("📋 Configuration Summary"):
@@ -614,28 +503,17 @@ def main():
                 else:
                     st.write("**Favorite Filters:** None")
                 
-                # Show additional stats
-                for i, config in enumerate(additional_stats_configs):
-                    if config.get('enabled', False):
-                        st.write(f"**{config['name']} Filters:** {list(config['values'].keys())} + blank")
-                    else:
-                        st.write(f"**Stat{i+1} Filters:** None")
+                if home_away_config['enabled']:
+                    st.write(f"**Home/Away Filters:** {list(home_away_config['values'].keys())} + blank")
+                else:
+                    st.write("**Home/Away Filters:** None")
                 
                 # Calculate total combinations
                 result_count = len(result_config['values']) + 1 if result_config['enabled'] else 1
                 favorite_count = len(favorite_config['values']) + 1 if favorite_config['enabled'] else 1
+                home_away_count = len(home_away_config['values']) + 1 if home_away_config['enabled'] else 1
                 
-                additional_counts = []
-                for config in additional_stats_configs:
-                    if config.get('enabled', False):
-                        additional_counts.append(len(config['values']) + 1)
-                    else:
-                        additional_counts.append(1)
-                
-                total_combinations = result_count * favorite_count
-                for count in additional_counts:
-                    total_combinations *= count
-                
+                total_combinations = result_count * favorite_count * home_away_count
                 total_new_cols = total_combinations * len(selected_numeric_cols) * 3 * 2  # 3 windows * 2 agg functions
                 
                 st.write(f"**Total Filter Combinations:** {total_combinations}")
@@ -651,43 +529,17 @@ def main():
                     
                     # Show a few examples
                     examples = []
-                    
-                    # Complex example with all filters
-                    if result_config['enabled'] and favorite_config['enabled'] and any(config.get('enabled', False) for config in additional_stats_configs):
-                        name_parts = []
-                        if result_config['enabled']:
-                            first_result = list(result_config['values'].keys())[0]
-                            name_parts.append(first_result)
-                        
-                        name_parts.append('avg')
-                        
-                        if favorite_config['enabled']:
-                            first_fav = list(favorite_config['values'].keys())[0]
-                            name_parts.append(first_fav)
-                        
-                        for config in additional_stats_configs:
-                            if config.get('enabled', False):
-                                first_category = list(config['values'].keys())[0]
-                                name_parts.append(f"{config['name']}-{first_category}")
-                                break  # Just show one for example
-                        
-                        name_parts.extend([example_col, 'L5'])
-                        examples.append(f"• {'_'.join(name_parts)}")
-                    
-                    # Simple examples
-                    if result_config['enabled']:
+                    if result_config['enabled'] and favorite_config['enabled'] and home_away_config['enabled']:
                         first_result = list(result_config['values'].keys())[0]
-                        examples.append(f"• {first_result}_avg_{example_col}_L10")
+                        first_fav = list(favorite_config['values'].keys())[0]
+                        first_home = list(home_away_config['values'].keys())[0]
+                        examples.append(f"• {first_result}_avg_{first_fav}_{first_home}_{example_col}_L5")
+                        examples.append(f"• {first_result}_median_{first_fav}_{first_home}_{example_col}_L10")
                     
                     if favorite_config['enabled']:
                         first_fav = list(favorite_config['values'].keys())[0]
-                        examples.append(f"• avg_{first_fav}_{example_col}_All")
-                    
-                    for config in additional_stats_configs:
-                        if config.get('enabled', False):
-                            first_category = list(config['values'].keys())[0]
-                            examples.append(f"• avg_{config['name']}-{first_category}_{example_col}_L5")
-                            break  # Just show one example
+                        examples.append(f"• avg_{first_fav}_{example_col}_L5")
+                        examples.append(f"• median_{first_fav}_{example_col}_All")
                     
                     examples.append(f"• avg_{example_col}_L5")
                     examples.append(f"• median_{example_col}_L10")
@@ -697,17 +549,17 @@ def main():
             
             # Process button
             if selected_numeric_cols:  # Only show button if at least one numeric column is selected
-                if st.button("Process Data & Compute Rolling Statistics", type="primary"):
+                if st.button("🚀 Process Data & Compute Rolling Statistics", type="primary"):
                     with st.spinner("Computing all rolling statistics combinations... This may take a few minutes for large datasets."):
                         start_time = time.time()
                         
-                        # Compute rolling averages using the processed dataframe
+                        # Compute rolling averages
                         processed_df = compute_rolling_averages(
-                            df_processed, 
+                            df, 
                             selected_numeric_cols, 
                             result_config, 
                             favorite_config, 
-                            additional_stats_configs
+                            home_away_config
                         )
                         
                         end_time = time.time()
@@ -716,11 +568,11 @@ def main():
                     st.success(f"✅ Processing completed in {processing_time:.2f} seconds!")
                     
                     # Show results
-                    st.subheader("Processed Data Preview")
+                    st.subheader("📋 Processed Data Preview")
                     st.dataframe(processed_df.head(10))
                     
-                    st.subheader("New Columns Added")
-                    new_cols = [col for col in processed_df.columns if col not in df_processed.columns]
+                    st.subheader("📊 New Columns Added")
+                    new_cols = [col for col in processed_df.columns if col not in df.columns]
                     st.info(f"Added {len(new_cols)} new rolling statistics columns")
                     
                     # Show some example new columns
@@ -748,7 +600,7 @@ def main():
                     )
                     
                     # Show summary statistics
-                    st.subheader("Summary Statistics")
+                    st.subheader("📈 Summary Statistics")
                     st.write("Sample rolling statistics for first team:")
                     first_team = processed_df['Team'].iloc[0]
                     team_sample = processed_df[processed_df['Team'] == first_team].head(5)
@@ -761,13 +613,12 @@ def main():
                             basic_cols.append(result_config['column'])
                         if favorite_config['enabled']:
                             basic_cols.append(favorite_config['column'])
-                        for config in additional_stats_configs:
-                            if config.get('enabled', False):
-                                basic_cols.append(config['column'])
+                        if home_away_config['enabled']:
+                            basic_cols.append(home_away_config['column'])
                         
                         st.dataframe(team_sample[basic_cols + sample_new_cols[:10]])
             else:
-                st.warning(" Please select at least one numeric column to calculate rolling statistics.")
+                st.warning("⚠️ Please select at least one numeric column to calculate rolling statistics.")
         
         except Exception as e:
             st.error(f"❌ Error processing file: {str(e)}")
@@ -777,16 +628,19 @@ def main():
         st.info("👆 Please upload a CSV file to get started.")
         
         # Show example format
-        st.subheader("Column Requirements")
+        st.subheader("📋 Expected CSV Format")
         st.markdown("""
-        Your CSV should contain columns that can be mapped to:
-        - **Team/Entity**: Fighter name, team name, or any identifier for grouping
-        - **Date**: Date of the match/event for chronological ordering
-        - **MatchID/EventID**: Unique identifier for each match or event
-        - **Numeric columns**: Any numeric statistics you want rolling averages for
-        - **Optional filter columns**: Result, Favorite/Underdog, custom categorical stats, etc.
+        Your CSV should contain these columns:
+        - **Team**: Team/Entity identifier
+        - **Date**: Date of the record (YYYY-MM-DD format preferred)
+        - **MatchID**: Unique identifier for each record
+        - **Optional columns for filtering:**
+          - Result column (e.g., Win/Loss/Draw)
+          - Favorite column (e.g., True/False or Favorite/Underdog)
+          - Home/Away column (e.g., Home/Away or H/A)
+        - **Numeric columns**: Any numeric data you want rolling statistics for
         
-        The tool will let you map your column names to the required fields.
+        The tool will calculate rolling averages AND medians (Last 5, Last 10, All-time) for ALL possible combinations of your selected filters.
         """)
 
 if __name__ == "__main__":
